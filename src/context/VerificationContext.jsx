@@ -4,11 +4,19 @@ const VerificationContext = createContext(null);
 
 const initialState = {
   started: false,
+  sessionId: null,
   idFront: null,
   idBack: null,
   faceImage: null,
+  livenessFrame: null,
   livenessStatus: "idle",
   verificationStatus: null,
+  backendStatus: null,
+  extractionStatus: "NOT_STARTED",
+  faceMatchStatus: "NOT_STARTED",
+  faceMatchScore: null,
+  faceMatchPassed: false,
+  riskScore: null,
 };
 
 export function VerificationProvider({ children }) {

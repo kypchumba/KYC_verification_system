@@ -4,7 +4,7 @@ import ActionBar from "../components/ActionBar.jsx";
 import StepHeader from "../components/StepHeader.jsx";
 import UploadCard from "../components/UploadCard.jsx";
 import { useVerification } from "../context/VerificationContext.jsx";
-import { uploadID } from "../services/verificationApi.js";
+import { mapServerState, uploadID } from "../services/verificationApi.js";
 
 function createImageState(file) {
   if (!file) return null;
@@ -20,6 +20,7 @@ export default function IdUploadPage() {
   const navigate = useNavigate();
   const { state, updateVerification } = useVerification();
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const setImage = (key, file) => {
     updateVerification({ [key]: createImageState(file) });
@@ -27,10 +28,16 @@ export default function IdUploadPage() {
 
   const continueToFaceCapture = async () => {
     setLoading(true);
-    const result = await uploadID({ idFront: state.idFront, idBack: state.idBack });
-    updateVerification({ idFront: result.idFront, idBack: result.idBack });
-    setLoading(false);
-    navigate("/face-capture");
+    setError("");
+    try {
+      const result = await uploadID({ sessionId: state.sessionId, idFront: state.idFront, idBack: state.idBack });
+      updateVerification({ ...mapServerState(result), idFront: state.idFront, idBack: state.idBack });
+      navigate("/face-capture");
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -40,7 +47,7 @@ export default function IdUploadPage() {
         <section className="panel">
           <div className="section-heading">
             <h2>Government ID</h2>
-            <p>Upload clear images of both sides of your identity document.</p>
+            <p>Upload clear images of both sides of your identity document. Face extraction starts in the background as soon as the upload completes.</p>
           </div>
           <div className="upload-grid">
             <UploadCard
@@ -56,10 +63,14 @@ export default function IdUploadPage() {
               onChange={(file) => setImage("idBack", file)}
             />
           </div>
+          {error && <p className="error-line">{error}</p>}
+          {state.extractionStatus && state.extractionStatus !== "NOT_STARTED" && (
+            <p className="muted-line">ID face extraction: {state.extractionStatus}</p>
+          )}
           <ActionBar
             onBack={() => navigate("/")}
             onNext={continueToFaceCapture}
-            nextDisabled={!state.idFront || !state.idBack}
+            nextDisabled={!state.idFront || !state.idBack || !state.sessionId}
             loading={loading}
           />
         </section>

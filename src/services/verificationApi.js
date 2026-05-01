@@ -1,24 +1,85 @@
-const delay = (ms = 700) => new Promise((resolve) => setTimeout(resolve, ms));
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
 
-export async function uploadID({ idFront, idBack }) {
-  await delay();
-  return { idFront, idBack, uploaded: true };
+async function request(path, options = {}) {
+  const response = await fetch(`${API_BASE_URL}${path}`, options);
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || data.detail || "Request failed");
+  }
+
+  return data;
 }
 
-export async function captureFace(faceImage) {
-  await delay(500);
-  return { faceImage, captured: true };
+function appendImage(formData, key, image) {
+  const file = image?.file || image;
+  if (!file) {
+    throw new Error(`${key} is required`);
+  }
+  formData.append(key, file);
 }
 
-export async function runLiveness() {
-  await delay(1200);
-  return { status: "verified" };
-}
-
-export async function submitVerification(payload) {
-  await delay(900);
+export function mapServerState(data) {
   return {
-    ...payload,
-    verificationStatus: "VERIFIED",
+    sessionId: data.session_id,
+    backendStatus: data,
+    extractionStatus: data.extraction_status,
+    faceMatchStatus: data.face_match_status,
+    faceMatchScore: data.face_match_score,
+    faceMatchPassed: data.face_match_passed,
+    verificationStatus: data.status === "IN_PROGRESS" || data.status === "STARTED" ? null : data.status,
+    riskScore: data.risk_score,
   };
+}
+
+export async function startSession() {
+  return request("/start-session", { method: "POST" });
+}
+
+export async function uploadID({ sessionId, idFront, idBack }) {
+  const formData = new FormData();
+  formData.append("session_id", sessionId);
+  appendImage(formData, "id_front", idFront);
+  appendImage(formData, "id_back", idBack);
+
+  return request("/upload-id", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function uploadFace({ sessionId, faceImage }) {
+  const formData = new FormData();
+  formData.append("session_id", sessionId);
+  appendImage(formData, "face_image", faceImage);
+
+  return request("/upload-face", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function runLiveness({ sessionId, livenessImage }) {
+  const formData = new FormData();
+  formData.append("session_id", sessionId);
+  if (livenessImage) {
+    appendImage(formData, "liveness_image", livenessImage);
+  }
+
+  return request("/liveness-check", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export async function submitVerification(sessionId) {
+  return request("/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
+export async function getVerificationStatus(sessionId) {
+  return request(`/status/${sessionId}`);
 }

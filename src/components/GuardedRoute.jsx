@@ -13,14 +13,14 @@ export default function GuardedRoute({ step, children }) {
   const { state } = useVerification();
 
   const canAccess = {
-    idUpload: state.started,
-    faceCapture: state.started && Boolean(state.idFront && state.idBack),
-    liveness: state.started && Boolean(state.idFront && state.idBack && state.faceImage),
+    idUpload: state.started && Boolean(state.sessionId),
+    faceCapture: state.started && Boolean(state.sessionId && state.idFront && state.idBack),
+    liveness: state.started && Boolean(state.sessionId && state.idFront && state.idBack && state.faceImage),
     review:
       state.started &&
-      Boolean(state.idFront && state.idBack && state.faceImage) &&
+      Boolean(state.sessionId && state.idFront && state.idBack && state.faceImage) &&
       state.livenessStatus === "verified",
-    result: Boolean(state.verificationStatus),
+    result: Boolean(state.sessionId && state.verificationStatus),
   };
 
   if (!canAccess[step]) {

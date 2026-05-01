@@ -1,3 +1,14 @@
 node_modules/
 dist/
 build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# Backend runtime uploads/logs
+uploads/
+*.log
+*.db

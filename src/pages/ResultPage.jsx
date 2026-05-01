@@ -9,6 +9,12 @@ const statusContent = {
     title: "VERIFIED",
     message: "Your identity verification has been completed successfully.",
   },
+  REVIEW: {
+    className: "pending",
+    icon: Clock3,
+    title: "PENDING REVIEW",
+    message: "Your submission was received and is waiting for manual review.",
+  },
   "PENDING REVIEW": {
     className: "pending",
     icon: Clock3,
@@ -26,7 +32,7 @@ const statusContent = {
 export default function ResultPage() {
   const navigate = useNavigate();
   const { state, resetVerification } = useVerification();
-  const content = statusContent[state.verificationStatus] || statusContent["PENDING REVIEW"];
+  const content = statusContent[state.verificationStatus] || statusContent.REVIEW;
   const StatusIcon = content.icon;
 
   const backToStart = () => {
@@ -43,6 +49,10 @@ export default function ResultPage() {
         <p className={`result-status ${content.className}`}>{content.title}</p>
         <h1>Verification Result</h1>
         <p>{content.message}</p>
+        <div className="result-metrics">
+          <span>Risk score: {state.riskScore ?? "Pending"}</span>
+          <span>Face match: {state.faceMatchScore ?? "Pending"}</span>
+        </div>
         <button className="button primary large" type="button" onClick={backToStart}>
           Back to Start
         </button>

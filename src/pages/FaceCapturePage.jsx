@@ -1,27 +1,122 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Camera, CheckCircle2 } from "lucide-react";
+import { Camera, CheckCircle2, UploadCloud, Video } from "lucide-react";
 import ActionBar from "../components/ActionBar.jsx";
 import StepHeader from "../components/StepHeader.jsx";
 import { useVerification } from "../context/VerificationContext.jsx";
-import { captureFace } from "../services/verificationApi.js";
+import { mapServerState, uploadFace } from "../services/verificationApi.js";
 
-const mockFaceImage = {
-  name: "face-capture-placeholder",
-  previewUrl:
-    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='720' height='480' viewBox='0 0 720 480'%3E%3Crect width='720' height='480' fill='%23f1f5f9'/%3E%3Ccircle cx='360' cy='190' r='72' fill='%23dbeafe' stroke='%232563eb' stroke-width='8'/%3E%3Cpath d='M230 390c28-83 91-125 130-125s102 42 130 125' fill='%23dbeafe' stroke='%232563eb' stroke-width='8' stroke-linecap='round'/%3E%3C/svg%3E",
-};
+function createImageState(file) {
+  return {
+    file,
+    name: file.name,
+    previewUrl: URL.createObjectURL(file),
+    uploaded: true,
+  };
+}
 
 export default function FaceCapturePage() {
   const navigate = useNavigate();
   const { state, updateVerification } = useVerification();
-  const [captureLoading, setCaptureLoading] = useState(false);
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraError, setCameraError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setCameraReady(false);
+  };
+
+  const startCamera = async () => {
+    if (state.faceImage || streamRef.current) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Camera access is not supported in this browser. Upload a selfie image instead.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      setCameraReady(true);
+      setCameraError("");
+    } catch (cameraAccessError) {
+      setCameraError(cameraAccessError.message || "Camera permission was denied. Upload a selfie image instead.");
+    }
+  };
+
+  useEffect(() => {
+    startCamera();
+    return stopCamera;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const captureFrame = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || !video.videoWidth) {
+      throw new Error("Camera is not ready yet");
+    }
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error("Could not capture image from camera"));
+          return;
+        }
+        resolve(new File([blob], "face.jpg", { type: "image/jpeg" }));
+      }, "image/jpeg", 0.92);
+    });
+  };
+
+  const uploadFaceImage = async (file) => {
+    setUploading(true);
+    setError("");
+    try {
+      const localFace = createImageState(file);
+      const result = await uploadFace({ sessionId: state.sessionId, faceImage: file });
+      updateVerification({ ...mapServerState(result), faceImage: localFace });
+      stopCamera();
+    } catch (uploadError) {
+      setError(uploadError.message);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const handleCapture = async () => {
-    setCaptureLoading(true);
-    const result = await captureFace(mockFaceImage);
-    updateVerification({ faceImage: result.faceImage });
-    setCaptureLoading(false);
+    try {
+      const file = await captureFrame();
+      await uploadFaceImage(file);
+    } catch (captureError) {
+      setError(captureError.message);
+    }
+  };
+
+  const handleUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      await uploadFaceImage(file);
+    }
+    event.target.value = "";
   };
 
   return (
@@ -34,26 +129,43 @@ export default function FaceCapturePage() {
               {state.faceImage ? (
                 <img src={state.faceImage.previewUrl} alt="Face capture preview" />
               ) : (
-                <div className="camera-placeholder">
-                  <Camera size={42} />
-                  <p>Position your face inside the frame</p>
-                </div>
+                <>
+                  <video ref={videoRef} className="camera-video" autoPlay muted playsInline />
+                  {!cameraReady && (
+                    <div className="camera-placeholder">
+                      <Video size={42} />
+                      <p>{cameraError || "Starting camera"}</p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
             <aside className="capture-side panel-soft">
               <h2>Capture a clear selfie</h2>
-              <p>Use a well-lit space and keep your face centered for the best verification result.</p>
-              <button className="button primary" type="button" onClick={handleCapture} disabled={captureLoading}>
-                {captureLoading ? <span className="spinner" aria-hidden="true" /> : <Camera size={18} />}
-                {captureLoading ? "Capturing" : "Capture Face"}
-              </button>
+              <p>Use your camera or upload an image. Matching starts in the backend after the selfie reaches the server.</p>
+              <div className="capture-actions">
+                <button className="button primary" type="button" onClick={handleCapture} disabled={!cameraReady || uploading || Boolean(state.faceImage)}>
+                  {uploading ? <span className="spinner" aria-hidden="true" /> : <Camera size={18} />}
+                  {uploading ? "Uploading" : "Capture Face"}
+                </button>
+                <label className="button secondary file-button" htmlFor="face-upload">
+                  <UploadCloud size={18} /> Upload Image
+                </label>
+                <input id="face-upload" className="sr-only" type="file" accept="image/png,image/jpeg,image/jpg" onChange={handleUpload} disabled={uploading || Boolean(state.faceImage)} />
+              </div>
+              {cameraError && <p className="muted-line">{cameraError}</p>}
+              {error && <p className="error-line">{error}</p>}
               {state.faceImage && (
-                <p className="inline-success">
-                  <CheckCircle2 size={17} /> Face captured
-                </p>
+                <div className="status-stack">
+                  <p className="inline-success">
+                    <CheckCircle2 size={17} /> Face uploaded
+                  </p>
+                  <p className="muted-line">Face match: {state.faceMatchStatus || "QUEUED"}</p>
+                </div>
               )}
             </aside>
           </div>
+          <canvas ref={canvasRef} className="sr-only" />
           <ActionBar
             onBack={() => navigate("/upload-id")}
             onNext={() => navigate("/liveness")}

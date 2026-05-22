@@ -43,6 +43,12 @@ class StepResponse(BaseModel):
     risk_score: int | None = None
 
 
+class UploadCleanupResponse(BaseModel):
+    session_id: UUID
+    uploads_deleted: bool
+    message: str
+
+
 class VerificationStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

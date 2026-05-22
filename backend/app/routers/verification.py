@@ -2,11 +2,17 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
 from sqlalchemy.orm import Session
 from app.database.session import get_db
-from app.schemas.verification import SessionIdRequest, StartSessionResponse, StepResponse, VerificationStatusResponse
+from app.schemas.verification import (
+    SessionIdRequest,
+    StartSessionResponse,
+    StepResponse,
+    UploadCleanupResponse,
+    VerificationStatusResponse,
+)
 from app.services.exceptions import VerificationError
 from app.services.jobs import finalize_pending_processing, run_face_match, run_id_face_extraction
 from app.services.storage import StorageService
-from app.services.verification import STEP_UPLOAD_FACE, STEP_UPLOAD_ID, VerificationService
+from app.services.verification import STEP_COMPLETE, STEP_UPLOAD_FACE, STEP_UPLOAD_ID, VerificationService
 
 router = APIRouter(tags=["verification"])
 storage = StorageService()
@@ -119,6 +125,23 @@ def submit_verification(payload: SessionIdRequest, db: Session = Depends(get_db)
     db.expire_all()
     session = VerificationService(db).submit(payload.session_id)
     return serialize_step(session, "Verification submitted")
+
+
+@router.post("/cleanup-uploads", response_model=UploadCleanupResponse)
+def cleanup_uploads(payload: SessionIdRequest, db: Session = Depends(get_db)):
+    service = VerificationService(db)
+    session = service.get_session(payload.session_id)
+    if session.current_step != STEP_COMPLETE:
+        raise VerificationError("Verification must be completed before uploads can be deleted")
+
+    uploads_deleted = storage.delete_session_uploads(session.id)
+    session = service.clear_upload_references(session.id)
+    message = "Upload files deleted" if uploads_deleted else "No upload files found"
+    return {
+        "session_id": session.id,
+        "uploads_deleted": uploads_deleted,
+        "message": message,
+    }
 
 
 @router.get("/status/{session_id}", response_model=VerificationStatusResponse)

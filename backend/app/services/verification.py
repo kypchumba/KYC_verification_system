@@ -138,6 +138,20 @@ class VerificationService:
         self.db.refresh(session)
         return session
 
+    def clear_upload_references(self, session_id: UUID) -> VerificationSession:
+        session = self.get_session(session_id)
+        if session.current_step != STEP_COMPLETE:
+            raise VerificationError("Verification must be completed before uploads can be deleted")
+
+        session.id_front_path = None
+        session.id_back_path = None
+        session.extracted_face_path = None
+        session.face_image_path = None
+        session.liveness_artifact_path = None
+        self.db.commit()
+        self.db.refresh(session)
+        return session
+
     @staticmethod
     def calculate_risk_score(session: VerificationSession) -> int:
         score = 0

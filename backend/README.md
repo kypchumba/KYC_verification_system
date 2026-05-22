@@ -35,12 +35,12 @@ Invoke-WebRequest http://127.0.0.1:8000/health
 When you are ready for PostgreSQL, update `.env`:
 
 ```env
-DATABASE_URL=postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/kyc
+DATABASE_URL=postgresql+psycopg://postgres:YOUR_URL_ENCODED_PASSWORD@localhost:5432/kyc
 UPLOADS_DIR=uploads
 CORS_ORIGINS=["http://127.0.0.1:5173","http://localhost:5173"]
 ```
 
-Create the database, then start the same Uvicorn command.
+Create the database, then start the same Uvicorn command. URL-encode special password characters; for example, `@` becomes `%40`.
 
 ## Flow
 
@@ -63,3 +63,4 @@ The React app calls `http://127.0.0.1:8000` by default. Override it with `VITE_A
 ## Biometric Engine Note
 
 `backend/app/services/biometrics.py` is a local development engine. It performs real image crop and fingerprint comparison with Pillow, but it is not a production biometric model. Replace it with OCR, face detection, face embedding, and liveness ML services before handling real identity decisions.
+

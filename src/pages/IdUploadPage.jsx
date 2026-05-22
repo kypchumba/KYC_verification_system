@@ -23,6 +23,10 @@ export default function IdUploadPage() {
   const [error, setError] = useState("");
 
   const setImage = (key, file) => {
+    if (state[key]?.previewUrl) {
+      URL.revokeObjectURL(state[key].previewUrl);
+    }
+
     updateVerification({ [key]: createImageState(file) });
   };
 

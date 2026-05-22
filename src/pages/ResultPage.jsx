@@ -1,6 +1,8 @@
+import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle2, Clock3, XCircle } from "lucide-react";
 import { useVerification } from "../context/VerificationContext.jsx";
+import { cleanupVerificationUploads } from "../services/verificationApi.js";
 
 const statusContent = {
   VERIFIED: {
@@ -29,11 +31,35 @@ const statusContent = {
   },
 };
 
+function revokePreviewUrl(image) {
+  if (image?.previewUrl) {
+    URL.revokeObjectURL(image.previewUrl);
+  }
+}
+
 export default function ResultPage() {
   const navigate = useNavigate();
-  const { state, resetVerification } = useVerification();
+  const { state, resetVerification, updateVerification } = useVerification();
+  const cleanupStartedRef = useRef(false);
   const content = statusContent[state.verificationStatus] || statusContent.REVIEW;
   const StatusIcon = content.icon;
+
+  useEffect(() => {
+    if (!state.sessionId || cleanupStartedRef.current) return;
+
+    cleanupStartedRef.current = true;
+    [state.idFront, state.idBack, state.faceImage, state.livenessFrame].forEach(revokePreviewUrl);
+    updateVerification({
+      idFront: null,
+      idBack: null,
+      faceImage: null,
+      livenessFrame: null,
+    });
+
+    cleanupVerificationUploads(state.sessionId).catch((cleanupError) => {
+      console.error("Upload cleanup failed", cleanupError);
+    });
+  }, [state.sessionId]);
 
   const backToStart = () => {
     resetVerification();

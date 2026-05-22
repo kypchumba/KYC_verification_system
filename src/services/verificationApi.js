@@ -80,6 +80,14 @@ export async function submitVerification(sessionId) {
   });
 }
 
+export async function cleanupVerificationUploads(sessionId) {
+  return request("/cleanup-uploads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
 export async function getVerificationStatus(sessionId) {
   return request(`/status/${sessionId}`);
 }

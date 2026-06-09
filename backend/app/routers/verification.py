@@ -1,7 +1,9 @@
+import asyncio
 from uuid import UUID
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
-from app.database.session import get_db
+from app.database.session import SessionLocal, get_db
+from app.liveness.session import ActiveLivenessSession
 from app.schemas.verification import (
     SessionIdRequest,
     StartSessionResponse,
@@ -12,7 +14,7 @@ from app.schemas.verification import (
 from app.services.exceptions import VerificationError
 from app.services.jobs import finalize_pending_processing, run_face_match, run_id_face_extraction
 from app.services.storage import StorageService
-from app.services.verification import STEP_COMPLETE, STEP_UPLOAD_FACE, STEP_UPLOAD_ID, VerificationService
+from app.services.verification import STEP_COMPLETE, STEP_LIVENESS, STEP_UPLOAD_FACE, STEP_UPLOAD_ID, VerificationService
 
 router = APIRouter(tags=["verification"])
 storage = StorageService()
@@ -54,6 +56,7 @@ def serialize_step(session, message: str) -> dict:
         "face_match_score": session.face_match_score,
         "face_match_passed": session.face_match_passed,
         "liveness_status": session.liveness_status,
+        "liveness_passed": session.liveness_passed,
         "risk_score": session.risk_score,
     }
 
@@ -112,11 +115,77 @@ async def liveness_check(
     liveness_image: UploadFile | None = File(None),
     db: Session = Depends(get_db),
 ):
-    liveness_path = None
-    if liveness_image is not None:
-        liveness_path = await storage.save_upload(session_id, liveness_image, "liveness.jpg")
-    session = VerificationService(db).record_liveness(session_id, liveness_path)
-    return serialize_step(session, "Liveness prompts completed")
+    raise VerificationError(
+        "Single-frame liveness uploads are not accepted. Complete active liveness over /liveness-stream/{session_id}."
+    )
+
+
+async def send_liveness_socket_failure(websocket: WebSocket, message: str, code: int = 1000) -> None:
+    try:
+        await websocket.send_json({"type": "fail", "status": "FAIL", "result": "FAIL", "error": message})
+        await websocket.close(code=code)
+    except RuntimeError:
+        pass
+
+
+@router.websocket("/liveness-stream/{session_id}")
+async def liveness_stream(websocket: WebSocket, session_id: UUID):
+    await websocket.accept()
+    db = SessionLocal()
+    liveness: ActiveLivenessSession | None = None
+
+    try:
+        service = VerificationService(db)
+        session = service.get_session(session_id)
+        service.require_step(session, STEP_LIVENESS)
+        if not session.face_image_path:
+            raise VerificationError("Face capture must be completed first")
+
+        liveness = ActiveLivenessSession(challenge_count=3)
+        await websocket.send_json(liveness.start())
+
+        while True:
+            try:
+                message = await asyncio.wait_for(websocket.receive(), timeout=liveness.seconds_until_deadline())
+            except asyncio.TimeoutError:
+                result = liveness.fail_current_timeout()
+            else:
+                if message.get("type") == "websocket.disconnect":
+                    break
+
+                frame_bytes = message.get("bytes")
+                if not frame_bytes:
+                    continue
+
+                result = liveness.process_jpeg(frame_bytes)
+
+            if result["status"] == "LIVE":
+                artifact_path = storage.save_json(session_id, liveness.transcript(), "liveness.json")
+                session = service.record_liveness_passed(session_id, artifact_path)
+                result["server_state"] = serialize_step(session, "Active liveness verified")
+                await websocket.send_json(result)
+                await websocket.close(code=1000)
+                break
+
+            if result["status"] == "FAIL":
+                error = result.get("error") or "Active liveness failed"
+                session = service.record_liveness_failed(session_id, error)
+                result["server_state"] = serialize_step(session, "Active liveness failed")
+                await websocket.send_json(result)
+                await websocket.close(code=1000)
+                break
+
+            await websocket.send_json(result)
+    except WebSocketDisconnect:
+        pass
+    except VerificationError as exc:
+        await send_liveness_socket_failure(websocket, exc.message)
+    except ValueError as exc:
+        await send_liveness_socket_failure(websocket, str(exc))
+    finally:
+        if liveness is not None:
+            liveness.close()
+        db.close()
 
 
 @router.post("/submit", response_model=StepResponse)

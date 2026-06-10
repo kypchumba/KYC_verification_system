@@ -40,6 +40,7 @@ class StepResponse(BaseModel):
     face_match_score: int | None = None
     face_match_passed: bool | None = None
     liveness_status: ProcessingStatusSchema | None = None
+    liveness_passed: bool | None = None
     risk_score: int | None = None
 
 

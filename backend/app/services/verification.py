@@ -62,6 +62,9 @@ class VerificationService:
         return session
 
     def record_liveness(self, session_id: UUID, liveness_artifact_path: str | None = None) -> VerificationSession:
+        return self.record_liveness_passed(session_id, liveness_artifact_path)
+
+    def record_liveness_passed(self, session_id: UUID, liveness_artifact_path: str | None = None) -> VerificationSession:
         session = self.get_session(session_id)
         self.require_step(session, STEP_LIVENESS)
         if not session.face_image_path:
@@ -71,6 +74,21 @@ class VerificationService:
         session.liveness_error = None
         session.liveness_passed = True
         session.current_step = STEP_SUBMIT
+        session.status = VerificationStatus.IN_PROGRESS
+        self.db.commit()
+        self.db.refresh(session)
+        return session
+
+    def record_liveness_failed(self, session_id: UUID, error: str) -> VerificationSession:
+        session = self.get_session(session_id)
+        self.require_step(session, STEP_LIVENESS)
+        if not session.face_image_path:
+            raise VerificationError("Face capture must be completed first")
+        session.liveness_artifact_path = None
+        session.liveness_status = ProcessingStatus.FAILED.value
+        session.liveness_error = error
+        session.liveness_passed = False
+        session.current_step = STEP_LIVENESS
         session.status = VerificationStatus.IN_PROGRESS
         self.db.commit()
         self.db.refresh(session)

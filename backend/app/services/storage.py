@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 from uuid import UUID
@@ -44,4 +45,9 @@ class StorageService:
 
         destination.write_bytes(contents)
         await upload.close()
+        return destination.as_posix()
+
+    def save_json(self, session_id: UUID, payload: dict, filename: str) -> str:
+        destination = self.session_dir(session_id) / filename
+        destination.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return destination.as_posix()

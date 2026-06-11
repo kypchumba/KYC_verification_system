@@ -1,18 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CheckCircle2, Play, ScanFace, Video } from "lucide-react";
+import { CheckCircle2, Play, ScanFace, Video, XCircle } from "lucide-react";
 import ActionBar from "../components/ActionBar.jsx";
 import StepHeader from "../components/StepHeader.jsx";
 import { useVerification } from "../context/VerificationContext.jsx";
-import { mapServerState, runLiveness } from "../services/verificationApi.js";
+import { createLivenessSocket, mapServerState } from "../services/verificationApi.js";
 
-const checks = [
-  { label: "Turn your head left", seconds: 5 },
-  { label: "Show your right hand", seconds: 5 },
-  { label: "Blink twice", seconds: 4 },
-];
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const FRAME_INTERVAL_MS = 120;
 
 function createFrameState(file) {
   return {
@@ -22,21 +16,61 @@ function createFrameState(file) {
   };
 }
 
+function formatProgress(progress = {}) {
+  if (typeof progress.blink_count === "number") {
+    return `${progress.blink_count}/${progress.target ?? 2} blinks`;
+  }
+  if (typeof progress.yaw === "number") {
+    return `Yaw ${progress.yaw.toFixed(1)} deg`;
+  }
+  if (typeof progress.smile_ratio === "number") {
+    return `Smile ${progress.smile_ratio.toFixed(2)}`;
+  }
+  if (typeof progress.pitch === "number") {
+    return `Pitch ${progress.pitch.toFixed(1)} deg`;
+  }
+  return "";
+}
+
 export default function LivenessPage() {
   const navigate = useNavigate();
   const { state, updateVerification } = useVerification();
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-  const [activeCheck, setActiveCheck] = useState(-1);
-  const [completedCount, setCompletedCount] = useState(state.livenessStatus === "verified" ? checks.length : 0);
+  const socketRef = useRef(null);
+  const frameTimerRef = useRef(null);
+  const frameInFlightRef = useRef(false);
+  const terminalRef = useRef(false);
+
+  const [challengePlan, setChallengePlan] = useState([]);
+  const [activeChallenge, setActiveChallenge] = useState(null);
+  const [completedChallenges, setCompletedChallenges] = useState([]);
   const [countdown, setCountdown] = useState(0);
+  const [feedback, setFeedback] = useState("");
+  const [progressText, setProgressText] = useState("");
   const [running, setRunning] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [error, setError] = useState("");
 
   const verified = state.livenessStatus === "verified";
+
+  const stopFrameLoop = () => {
+    if (frameTimerRef.current) {
+      clearInterval(frameTimerRef.current);
+      frameTimerRef.current = null;
+    }
+    frameInFlightRef.current = false;
+  };
+
+  const closeSocket = () => {
+    const socket = socketRef.current;
+    socketRef.current = null;
+    if (socket && socket.readyState !== WebSocket.CLOSED) {
+      socket.close();
+    }
+  };
 
   const stopCamera = () => {
     if (streamRef.current) {
@@ -72,11 +106,15 @@ export default function LivenessPage() {
 
   useEffect(() => {
     startCamera();
-    return stopCamera;
+    return () => {
+      stopFrameLoop();
+      closeSocket();
+      stopCamera();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const captureFrame = () => {
+  const capturePreviewFrame = () => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas || !video.videoWidth) {
@@ -99,39 +137,133 @@ export default function LivenessPage() {
     });
   };
 
-  const startCheck = async () => {
-    setRunning(true);
-    setError("");
-    updateVerification({ livenessStatus: "running" });
+  const sendFrame = () => {
+    const socket = socketRef.current;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !video || !canvas || !video.videoWidth || frameInFlightRef.current) {
+      return;
+    }
 
-    try {
-      for (let index = 0; index < checks.length; index += 1) {
-        setActiveCheck(index);
-        for (let remaining = checks[index].seconds; remaining > 0; remaining -= 1) {
-          setCountdown(remaining);
-          await sleep(1000);
+    frameInFlightRef.current = true;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob(async (blob) => {
+      try {
+        if (blob && socket.readyState === WebSocket.OPEN) {
+          socket.send(await blob.arrayBuffer());
         }
-        setCompletedCount(index + 1);
+      } finally {
+        frameInFlightRef.current = false;
       }
+    }, "image/jpeg", 0.78);
+  };
 
-      const file = await captureFrame();
-      const frame = createFrameState(file);
-      const result = await runLiveness({ sessionId: state.sessionId, livenessImage: file });
-      updateVerification({
-        ...mapServerState(result),
-        livenessFrame: frame,
-        livenessStatus: result.liveness_status === "COMPLETED" ? "verified" : "failed",
-      });
-      stopCamera();
-    } catch (checkError) {
-      updateVerification({ livenessStatus: "failed" });
-      setError(checkError.message);
-    } finally {
+  const handleServerMessage = async (message) => {
+    if (message.plan) {
+      setChallengePlan(message.plan);
+    }
+    if (message.challenge) {
+      setActiveChallenge(message.challenge);
+      setCountdown(Math.ceil(message.challenge.remaining_seconds || 0));
+    }
+    if (message.completed) {
+      setCompletedChallenges(message.completed);
+    }
+    if (message.feedback) {
+      setFeedback(message.feedback);
+    }
+    setProgressText(formatProgress(message.progress));
+
+    if (message.status === "LIVE") {
+      terminalRef.current = true;
+      stopFrameLoop();
       setCountdown(0);
-      setActiveCheck(-1);
+      setFeedback("Liveness verified");
+      setProgressText("");
       setRunning(false);
+
+      const updates = {
+        ...(message.server_state ? mapServerState(message.server_state) : {}),
+        livenessStatus: "verified",
+      };
+      try {
+        updates.livenessFrame = createFrameState(await capturePreviewFrame());
+      } catch {
+        // The streaming transcript is the verification artifact; this preview is best effort.
+      }
+      updateVerification(updates);
+      closeSocket();
+      stopCamera();
+      return;
+    }
+
+    if (message.status === "FAIL") {
+      terminalRef.current = true;
+      stopFrameLoop();
+      setRunning(false);
+      setError(message.error || "Active liveness failed");
+      updateVerification({
+        ...(message.server_state ? mapServerState(message.server_state) : {}),
+        livenessStatus: "failed",
+      });
+      closeSocket();
     }
   };
+
+  const startCheck = () => {
+    if (!state.sessionId) {
+      setError("Start a verification session before liveness.");
+      return;
+    }
+
+    terminalRef.current = false;
+    setChallengePlan([]);
+    setActiveChallenge(null);
+    setCompletedChallenges([]);
+    setCountdown(0);
+    setFeedback("Center your face in the frame");
+    setProgressText("");
+    setError("");
+    setRunning(true);
+    updateVerification({ livenessStatus: "running" });
+
+    const socket = createLivenessSocket(state.sessionId);
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      sendFrame();
+      frameTimerRef.current = setInterval(sendFrame, FRAME_INTERVAL_MS);
+    };
+
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        void handleServerMessage(message);
+      } catch {
+        setError("Received an invalid liveness response.");
+      }
+    };
+
+    socket.onerror = () => {
+      setError("Could not connect to the active liveness stream.");
+    };
+
+    socket.onclose = () => {
+      stopFrameLoop();
+      socketRef.current = null;
+      setRunning(false);
+      if (!terminalRef.current) {
+        updateVerification({ livenessStatus: "failed" });
+        setError("Liveness stream closed before verification completed.");
+      }
+    };
+  };
+
+  const visibleChallenges = challengePlan.length ? challengePlan : activeChallenge ? [activeChallenge] : [];
 
   return (
     <main className="page fade-in">
@@ -151,10 +283,10 @@ export default function LivenessPage() {
                       <p>{cameraError || "Starting camera"}</p>
                     </div>
                   )}
-                  {running && activeCheck >= 0 && (
+                  {running && activeChallenge && (
                     <div className="camera-prompt">
                       <ScanFace size={20} />
-                      <span>{checks[activeCheck].label}</span>
+                      <span>{activeChallenge.instruction}</span>
                       <strong>{countdown}s</strong>
                     </div>
                   )}
@@ -164,26 +296,36 @@ export default function LivenessPage() {
             <div className="instruction-card">
               <div className="section-heading compact">
                 <h2>Follow the prompts</h2>
-                <p>The camera stays on while each activity is timed.</p>
+                <p>Each prompt advances only when the requested action is detected.</p>
               </div>
               <ol className="check-list">
-                {checks.map((check, index) => {
-                  const complete = completedCount > index;
-                  const active = activeCheck === index;
-                  return (
-                    <li key={check.label} className={complete ? "complete" : active ? "active" : ""}>
-                      <span>{complete ? <CheckCircle2 size={18} /> : index + 1}</span>
-                      {check.label}
-                      {active && <strong className="countdown-badge">{countdown}s</strong>}
-                    </li>
-                  );
-                })}
+                {visibleChallenges.length ? (
+                  visibleChallenges.map((challenge) => {
+                    const complete = verified || completedChallenges.some((item) => item.index === challenge.index);
+                    const active = activeChallenge?.index === challenge.index && !complete;
+                    return (
+                      <li key={`${challenge.index}-${challenge.type}`} className={complete ? "complete" : active ? "active" : ""}>
+                        <span>{complete ? <CheckCircle2 size={18} /> : challenge.index}</span>
+                        {challenge.instruction}
+                        {active && <strong className="countdown-badge">{countdown}s</strong>}
+                      </li>
+                    );
+                  })
+                ) : (
+                  <li className={running ? "active" : ""}>
+                    <span>{running ? <ScanFace size={18} /> : 1}</span>
+                    Ready for a random challenge
+                  </li>
+                )}
               </ol>
               <button className="button primary" type="button" onClick={startCheck} disabled={running || verified || !cameraReady}>
                 {running ? <span className="spinner" aria-hidden="true" /> : verified ? <CheckCircle2 size={18} /> : <Play size={18} />}
                 {running ? "Checking" : verified ? "Liveness Verified" : "Start Check"}
               </button>
               {verified && <p className="status-text verified">Liveness Verified</p>}
+              {state.livenessStatus === "failed" && <p className="status-text"><XCircle size={16} /> Liveness failed</p>}
+              {feedback && !verified && <p className="muted-line">{feedback}</p>}
+              {progressText && !verified && <p className="muted-line">{progressText}</p>}
               {cameraError && <p className="muted-line">{cameraError}</p>}
               {error && <p className="error-line">{error}</p>}
             </div>

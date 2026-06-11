@@ -27,6 +27,7 @@ export function mapServerState(data) {
     faceMatchStatus: data.face_match_status,
     faceMatchScore: data.face_match_score,
     faceMatchPassed: data.face_match_passed,
+    livenessPassed: data.liveness_passed,
     verificationStatus: data.status === "IN_PROGRESS" || data.status === "STARTED" ? null : data.status,
     riskScore: data.risk_score,
   };
@@ -59,18 +60,15 @@ export async function uploadFace({ sessionId, faceImage }) {
   });
 }
 
-export async function runLiveness({ sessionId, livenessImage }) {
-  const formData = new FormData();
-  formData.append("session_id", sessionId);
-  if (livenessImage) {
-    appendImage(formData, "liveness_image", livenessImage);
-  }
-
-  return request("/liveness-check", {
-    method: "POST",
-    body: formData,
-  });
+export function createLivenessSocket(sessionId) {
+  const socketUrl = new URL(API_BASE_URL);
+  socketUrl.protocol = socketUrl.protocol === "https:" ? "wss:" : "ws:";
+  const basePath = socketUrl.pathname.replace(/\/$/, "");
+  socketUrl.pathname = `${basePath}/liveness-stream/${sessionId}`;
+  socketUrl.search = "";
+  return new WebSocket(socketUrl.toString());
 }
+
 
 export async function submitVerification(sessionId) {
   return request("/submit", {

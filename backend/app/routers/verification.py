@@ -1,6 +1,7 @@
 import asyncio
 from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from app.database.session import SessionLocal, get_db
 from app.liveness.session import ActiveLivenessSession
@@ -120,9 +121,13 @@ async def liveness_check(
     )
 
 
+async def send_liveness_json(websocket: WebSocket, payload: dict) -> None:
+    await websocket.send_json(jsonable_encoder(payload))
+
+
 async def send_liveness_socket_failure(websocket: WebSocket, message: str, code: int = 1000) -> None:
     try:
-        await websocket.send_json({"type": "fail", "status": "FAIL", "result": "FAIL", "error": message})
+        await send_liveness_json(websocket, {"type": "fail", "status": "FAIL", "result": "FAIL", "error": message})
         await websocket.close(code=code)
     except RuntimeError:
         pass
@@ -142,7 +147,7 @@ async def liveness_stream(websocket: WebSocket, session_id: UUID):
             raise VerificationError("Face capture must be completed first")
 
         liveness = ActiveLivenessSession(challenge_count=3)
-        await websocket.send_json(liveness.start())
+        await send_liveness_json(websocket, liveness.start())
 
         while True:
             try:
@@ -163,7 +168,7 @@ async def liveness_stream(websocket: WebSocket, session_id: UUID):
                 artifact_path = storage.save_json(session_id, liveness.transcript(), "liveness.json")
                 session = service.record_liveness_passed(session_id, artifact_path)
                 result["server_state"] = serialize_step(session, "Active liveness verified")
-                await websocket.send_json(result)
+                await send_liveness_json(websocket, result)
                 await websocket.close(code=1000)
                 break
 
@@ -171,17 +176,19 @@ async def liveness_stream(websocket: WebSocket, session_id: UUID):
                 error = result.get("error") or "Active liveness failed"
                 session = service.record_liveness_failed(session_id, error)
                 result["server_state"] = serialize_step(session, "Active liveness failed")
-                await websocket.send_json(result)
+                await send_liveness_json(websocket, result)
                 await websocket.close(code=1000)
                 break
 
-            await websocket.send_json(result)
+            await send_liveness_json(websocket, result)
     except WebSocketDisconnect:
         pass
     except VerificationError as exc:
         await send_liveness_socket_failure(websocket, exc.message)
     except ValueError as exc:
         await send_liveness_socket_failure(websocket, str(exc))
+    except Exception as exc:
+        await send_liveness_socket_failure(websocket, f"Active liveness error: {exc}", code=1011)
     finally:
         if liveness is not None:
             liveness.close()
